@@ -14,7 +14,10 @@ WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "4"))
 MIN_IMPORTANCE = int(os.getenv("MIN_IMPORTANCE", "3"))
 MAX_ITEMS = 30
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODELS = [
+    os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+    "gemini-3.5-flash-lite",
+]
 TG_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TG_CHAT = os.environ["TELEGRAM_CHAT_ID"]
 
@@ -58,6 +61,25 @@ def fetch_news():
     return unique[:MAX_ITEMS]
 
 
+def call_gemini(model, prompt):
+    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+           + model + ":generateContent")
+    r = requests.post(
+        url,
+        headers={"x-goog-api-key": GEMINI_KEY},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json"},
+        },
+        timeout=90,
+    )
+    if not r.ok:
+        print("Gemini", model, r.status_code, r.text[:300])
+    r.raise_for_status()
+    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    return json.loads(text)
+
+
 def analyze_with_gemini(items):
     payload_items = [
         {"id": i, "title": it["title"], "text": it["summary"]}
@@ -72,20 +94,14 @@ def analyze_with_gemini(items):
         "крупные листинги). Не давай торговых советов. Только JSON.\n\n"
         + json.dumps(payload_items, ensure_ascii=False)
     )
-    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-           + GEMINI_MODEL + ":generateContent")
-    r = requests.post(
-        url,
-        headers={"x-goog-api-key": GEMINI_KEY},
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"},
-        },
-        timeout=90,
-    )
-    r.raise_for_status()
-    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    return {a["id"]: a for a in json.loads(text)}
+    for model in GEMINI_MODELS:
+        try:
+            data = call_gemini(model, prompt)
+            print("Gemini OK:", model)
+            return {a["id"]: a for a in data}
+        except Exception as e:
+            print("Gemini error", model, e)
+    return None
 
 
 def analyze_with_keywords(items):
@@ -140,6 +156,7 @@ def send_telegram(text):
                   "disable_web_page_preview": True},
             timeout=30,
         )
+        print("Telegram:", r.status_code, r.text)
         r.raise_for_status()
         time.sleep(1)
 
@@ -151,11 +168,9 @@ def main():
         return
     analysis = None
     if GEMINI_KEY:
-        try:
-            analysis = analyze_with_gemini(items)
-        except Exception as e:
-            print("Gemini error, fallback:", e)
+        analysis = analyze_with_gemini(items)
     if analysis is None:
+        print("Используем фильтр по ключевым словам")
         analysis = analyze_with_keywords(items)
     digest = build_digest(items, analysis)
     if digest:
