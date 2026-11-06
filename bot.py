@@ -7,12 +7,14 @@ import requests
 FEEDS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://cointelegraph.com/rss",
+    "https://cointelegraph.com/rss/tag/solana",
     "https://decrypt.co/feed",
     "https://www.theblock.co/rss.xml",
+    "https://news.google.com/rss/search?q=solana+crypto&hl=en-US&gl=US&ceid=US:en",
 ]
 WINDOW_HOURS = int(os.getenv("WINDOW_HOURS", "4"))
 MIN_IMPORTANCE = int(os.getenv("MIN_IMPORTANCE", "3"))
-MAX_ITEMS = 30
+MAX_ITEMS = 40
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODELS = [
     os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
@@ -22,11 +24,17 @@ TG_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TG_CHAT = os.environ["TELEGRAM_CHAT_ID"]
 
 KEYWORDS = ["sec ", "etf", "hack", "exploit", "listing", "ban", "lawsuit",
-            "bitcoin", "ethereum", "btc", "eth", "stablecoin", "binance"]
+            "bitcoin", "ethereum", "btc", "eth", "stablecoin", "binance",
+            "solana"]
 
 
 def clean(text):
     return html.unescape(re.sub(r"<[^>]+>", " ", text or "")).strip()
+
+
+def is_sol(it):
+    t = (it["title"] + " " + it["summary"]).lower()
+    return "solana" in t or re.search(r"\bsol\b", t) is not None
 
 
 def fetch_news():
@@ -58,6 +66,7 @@ def fetch_news():
         if key not in seen:
             seen.add(key)
             unique.append(it)
+    unique.sort(key=lambda it: not is_sol(it))
     return unique[:MAX_ITEMS]
 
 
@@ -131,8 +140,10 @@ def build_digest(items, analysis):
     for imp, _, it, a in rows:
         coins = ", ".join(a.get("coins") or [])
         coins = " [" + html.escape(coins) + "]" if coins else ""
+        mark = "◎ " if a.get("sol") else ""
         lines.append(
-            EMOJI.get(a.get("sentiment"), "⚪") + " <b>" + str(imp) + "/5</b>" + coins + "\n"
+            EMOJI.get(a.get("sentiment"), "⚪") + " " + mark
+            + "<b>" + str(imp) + "/5</b>" + coins + "\n"
             + html.escape(a["summary_ru"]) + "\n"
             + '<a href="' + html.escape(it["link"] or "") + '">'
             + html.escape(it["source"]) + "</a>\n"
@@ -172,6 +183,17 @@ def main():
     if analysis is None:
         print("Используем фильтр по ключевым словам")
         analysis = analyze_with_keywords(items)
+    # Все новости про Solana показываем всегда
+    for i, it in enumerate(items):
+        if is_sol(it):
+            a = analysis.setdefault(i, {
+                "coins": ["SOL"], "sentiment": "neutral",
+                "importance": MIN_IMPORTANCE, "summary_ru": it["title"],
+            })
+            a["importance"] = max(a.get("importance", 0), MIN_IMPORTANCE)
+            a["sol"] = True
+            if not a.get("summary_ru"):
+                a["summary_ru"] = it["title"]
     digest = build_digest(items, analysis)
     if digest:
         send_telegram(digest)
